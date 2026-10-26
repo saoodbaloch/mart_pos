@@ -1,0 +1,19 @@
+# MartPOS — Apache settings
+Options -Indexes
+DirectoryIndex index.php
+
+<FilesMatch "^(config\.php|.*\.sqlite.*|.*\.md)$">
+    Require all denied
+</FilesMatch>
+
+<IfModule mod_mime.c>
+    AddType application/manifest+json .webmanifest
+</IfModule>
+
+# Service worker hamesha naya check ho
+<Files "sw.js">
+    <IfModule mod_headers.c>
+        Header set Cache-Control "no-cache"
+        Header set Service-Worker-Allowed "./"
+    </IfModule>
+</Files>
