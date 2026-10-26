@@ -82,15 +82,18 @@
             h += '<tr><td>' + esc(METHOD_LABELS[p.method] || p.method) + (p.ref ? '<div class="sm">Ref: ' + esc(p.ref) + '</div>' : '') +
                 '</td><td class="r">' + money(p.amount) + '</td></tr>';
         });
+        var bp = +sale.credit_payment || 0;
+        if (bp > 0) h += '<tr><td>Paid towards previous balance</td><td class="r">' + money(bp) + '</td></tr>';
         if (+sale.change > 0) h += '<tr><td>Change</td><td class="r">' + money(sale.change) + '</td></tr>';
         if (+sale.returned_amount > 0) h += '<tr><td>Returned</td><td class="r">-' + money(sale.returned_amount) + '</td></tr>';
         h += '</table>';
-        if (sale.customer && udhaar > 0) {
+        if (sale.customer && (udhaar > 0 || bp > 0)) {
             h += '<hr><div class="sm"><b>Credit: ' + esc(sale.customer.name) + '</b>' + (sale.customer.phone ? ' (' + esc(sale.customer.phone) + ')' : '') + '</div><table class="sm">';
             if (sale.customer_prev != null) {
                 h += '<tr><td>Previous balance</td><td class="r">' + money(sale.customer_prev) + '</td></tr>';
-                h += '<tr><td>This bill on credit</td><td class="r">' + money(udhaar) + '</td></tr>';
-                h += '<tr><td><b>Total balance</b></td><td class="r"><b>' + money(+sale.customer_prev + udhaar) + '</b></td></tr>';
+                if (udhaar > 0) h += '<tr><td>This bill on credit</td><td class="r">' + money(udhaar) + '</td></tr>';
+                if (bp > 0) h += '<tr><td>Paid now</td><td class="r">-' + money(bp) + '</td></tr>';
+                h += '<tr><td><b>Total balance</b></td><td class="r"><b>' + money(+sale.customer_prev + udhaar - bp) + '</b></td></tr>';
             } else if (sale.customer.balance != null) {
                 h += '<tr><td><b>Total balance (to date)</b></td><td class="r"><b>' + money(sale.customer.balance) + '</b></td></tr>';
             }

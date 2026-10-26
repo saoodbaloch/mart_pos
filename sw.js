@@ -1,7 +1,7 @@
 /* MartPOS service worker — net ke baghair billing screen khulti rahe */
 'use strict';
 
-var VERSION = '1.4.0';
+var VERSION = '1.4.1';
 var CACHE = 'martpos-' + VERSION;
 var ASSETS = [
     'offline.html',

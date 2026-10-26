@@ -375,3 +375,7 @@ body.pos { height: 100vh; overflow: hidden; background: #eef0ec; }
 }
 
 #deviceLetter::placeholder { text-transform: none; }
+
+.pm-line .amt.auto { background: var(--warn-soft); color: var(--warn); border-color: #f2d6ac; cursor: default; }
+.pm-old { background: var(--ok-soft); border: 1px solid #bfe3cf; border-radius: 8px; padding: .55rem .75rem; color: var(--ok); }
+.pm-sum .pm-left { color: var(--ink-2); }

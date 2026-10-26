@@ -136,7 +136,13 @@ if ($c) {
 
     <div class="grid-2" style="grid-template-columns:minmax(0,1fr) minmax(0,1.5fr);align-items:start">
         <div class="stack" style="margin:0">
-            <?php if (can('customer_payment')): ?>
+            <?php if (can('customer_payment') && $balance <= 0.004): ?>
+            <div class="card card-pad stack">
+                <h2>No credit due</h2>
+                <p class="muted"><?= e($c['name']) ?> owes nothing right now. To give credit, use the <b>Credit</b> button on the Billing screen.</p>
+                <a class="btn" href="billing.php">Go to Billing</a>
+            </div>
+            <?php elseif (can('customer_payment')): ?>
             <form method="post" class="card card-pad stack" autocomplete="off">
                 <?= csrf_field() ?>
                 <input type="hidden" name="action" value="payment">
@@ -263,7 +269,7 @@ if ($admin && isset($_GET['export'])) {
         array_map(fn($r) => [$r['name'], (string)$r['phone'], $r['credit_limit'] !== null ? (float)$r['credit_limit'] : '', (float)$r['balance']], $rows));
 }
 $s = trim($_GET['s'] ?? '');
-$f = $_GET['f'] ?? 'baqi';
+$f = ($_GET['f'] ?? 'all') === 'baqi' ? 'baqi' : 'all';
 $where = '1=1';
 $params = [];
 if ($s !== '') {
@@ -317,8 +323,8 @@ layout_start('Credit', 'customers');
     <form class="toolbar" method="get">
         <input class="input" type="search" name="s" value="<?= e($s) ?>" placeholder="Name or phone">
         <select class="input" name="f" style="max-width:170px" onchange="this.form.submit()">
-            <option value="baqi" <?= $f === 'baqi' ? 'selected' : '' ?>>With balance due</option>
             <option value="all" <?= $f === 'all' ? 'selected' : '' ?>>All customers</option>
+            <option value="baqi" <?= $f === 'baqi' ? 'selected' : '' ?>>With balance due</option>
         </select>
         <button class="btn" type="submit">Search</button>
     </form>

@@ -252,6 +252,7 @@ $scanIcon = 'M3 7V5a2 2 0 012-2h2M17 3h2a2 2 0 012 2v2M21 17v2a2 2 0 01-2 2h-2M7
                     </div>
                 </div>
             </div>
+            <label class="check pm-old" id="pmOldBox" hidden><input type="checkbox" id="pmOldChk" checked> <span id="pmOldTxt"></span></label>
             <div class="pm-sum" id="pmSum"></div>
         </div>
         <div class="modal-foot"><button class="btn" type="button" data-close>Cancel (Esc)</button><button class="btn primary" type="submit" id="pmOk">Bill complete + Print</button></div>

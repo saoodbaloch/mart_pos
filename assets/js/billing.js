@@ -395,15 +395,16 @@
 
     var completing = false;
     /** Bill save (pehle is PC mein, phir server) + print */
-    function finalize(payments, customer) {
+    function finalize(payments, customer, balancePay) {
         if (completing || !cart.length) return;
+        balancePay = r2(balancePay || 0);
         var t = totals();
         var cashT = 0, other = 0, udhaar = 0;
         payments.forEach(function (p) {
             if (p.method === 'cash') cashT += p.amount; else other += p.amount;
             if (p.method === 'udhaar') udhaar += p.amount;
         });
-        var change = r2(cashT - Math.max(0, t.total - other));
+        var change = r2(cashT - Math.max(0, t.total - other) - balancePay);
         completing = true;
         var sale = {
             uuid: POS.uuid(),
@@ -420,6 +421,7 @@
             paid: r2(cashT + other),
             change: change,
             payments: payments.filter(function (p) { return p.amount > 0; }),
+            credit_payment: balancePay > 0 ? balancePay : 0,
             approvals: approvals.slice()
         };
         if (customer) {
@@ -427,8 +429,8 @@
             sale.customer_prev = customer.balance || 0; // receipt ke liye
         }
         var save = POS.queue('sale', sale);
-        if (customer && udhaar > 0) {
-            customer.balance = r2((customer.balance || 0) + udhaar);
+        if (customer && (udhaar > 0 || balancePay > 0)) {
+            customer.balance = r2((customer.balance || 0) + udhaar - balancePay);
             save = save.then(function () { return S.put('customers', customer); });
         }
         save.then(function () {
@@ -438,7 +440,8 @@
             closeModal();
             showLast();
             toast('Bill ' + sale.bill_no + (change > 0 ? ' · Change: ' + SHOP.currency + ' ' + money(change) : '') +
-                (udhaar > 0 ? ' · Credit: ' + money(udhaar) : ''), 'ok', 5000);
+                (udhaar > 0 ? ' · Credit: ' + money(udhaar) : '') +
+                (balancePay > 0 ? ' · Paid towards balance: ' + money(balancePay) : ''), 'ok', 5000);
             return Receipt.print(sale, SHOP);
         }).then(function () {
             completing = false;
@@ -452,7 +455,12 @@
 
     /* ---------- Payment modal (JazzCash, Easypaisa, Bank, Card, Udhaar, Split) ---------- */
     var METHODS = { cash: 'Cash', jazzcash: 'JazzCash', easypaisa: 'Easypaisa', bank: 'Bank transfer', card: 'Card', udhaar: 'Credit' };
-    var pmLines = [], pmCustomer = null, customersCache = [], custSel = 0;
+    var pmLines = [], pmCustomer = null, customersCache = [], custSel = 0, payOld = true;
+
+    function dueText(b) {
+        b = +b || 0;
+        return b < -0.004 ? 'advance ' + money(-b) : 'due ' + money(b);
+    }
 
     function openPay(method) {
         if (!cart.length) { toast('The bill is empty — scan a product first', 'err'); return; }
@@ -463,9 +471,14 @@
             pmLines = [{ method: 'cash', amount: c > 0 ? Math.min(c, t.total) : 0, ref: '' }, { method: 'jazzcash', amount: 0, ref: '' }];
             var left = r2(t.total - pmLines[0].amount);
             pmLines[1].amount = left > 0 ? left : 0;
+        } else if (method === 'udhaar') {
+            // Udhaar: cashier sirf likhe kitna cash abhi mila, baqi khud udhaar
+            var c0 = num(cash.value);
+            pmLines = [{ method: 'cash', amount: c0 > 0 ? r2(c0) : 0, ref: '' }, { method: 'udhaar', amount: 0, ref: '' }];
         } else {
             pmLines = [{ method: method, amount: t.total, ref: '' }];
         }
+        payOld = true;
         $('pmTotal').textContent = SHOP.currency + ' ' + money(t.total);
         $('pmCustQ').value = ''; $('pmNewName').value = ''; $('pmNewPhone').value = '';
         S.getAll('customers').then(function (rows) {
@@ -476,6 +489,7 @@
             setTimeout(function () {
                 if ($('payModal').contains(document.activeElement)) return; // user pehle hi type kar raha hai
                 var target = hasUdhaar() ? $('pmCustQ') : $('pmLines').querySelector(pmLines.length > 1 ? '.amt' : '.ref:not([hidden])') || $('pmOk');
+                if (hasUdhaar() && pmLines[0].amount === 0) target = $('pmCustQ');
                 target.focus(); if (target.select) target.select();
             }, 40);
         });
@@ -500,6 +514,11 @@
             var amt = document.createElement('input');
             amt.className = 'input amt'; amt.inputMode = 'decimal'; amt.value = l.amount ? l.amount : '';
             amt.placeholder = '0';
+            if (l.method === 'udhaar') {
+                // Udhaar haath se nahi likhte: bill − baqi payments = udhaar
+                amt.readOnly = true; amt.tabIndex = -1; amt.classList.add('auto');
+                amt.title = 'Calculated automatically: total minus what the customer pays now';
+            }
             amt.addEventListener('input', function () { l.amount = r2(num(amt.value) || 0); updatePaySum(); });
             var ref = document.createElement('input');
             ref.className = 'input ref'; ref.maxLength = 80;
@@ -538,27 +557,65 @@
     }
 
     function paySummary() {
-        var t = totals(), cashT = 0, other = 0, udhaar = 0;
+        var t = totals(), cashT = 0, other = 0, creditLines = [];
         pmLines.forEach(function (l) {
-            if (l.method === 'cash') cashT += l.amount || 0; else other += l.amount || 0;
-            if (l.method === 'udhaar') udhaar += l.amount || 0;
+            if (l.method === 'udhaar') creditLines.push(l);
+            else if (l.method === 'cash') cashT += l.amount || 0;
+            else other += l.amount || 0;
         });
-        var need = r2(t.total - other);
-        return { total: t.total, cash: r2(cashT), other: r2(other), udhaar: r2(udhaar), short: r2(need - cashT), change: r2(cashT - Math.max(0, need)), over: other > t.total + 0.004 };
+        cashT = r2(cashT); other = r2(other);
+        var over = other > t.total + 0.004;
+        var need = r2(Math.max(0, t.total - other));          // cash ya udhaar se poora hona hai
+        var credit = creditLines.length ? r2(Math.max(0, need - cashT)) : 0;
+        creditLines.forEach(function (l, i) { l.amount = i === 0 ? credit : 0; });
+        var surplus = r2(Math.max(0, cashT - need));          // bill se zyada cash
+        var due = pmCustomer ? (+pmCustomer.balance || 0) : 0;
+        var toOld = creditLines.length && payOld && surplus > 0 && due > 0 ? r2(Math.min(surplus, due)) : 0;
+        return {
+            total: t.total, cash: cashT, other: other, udhaar: credit, hasCredit: creditLines.length > 0,
+            short: creditLines.length ? 0 : r2(need - cashT), surplus: surplus, toOld: toOld,
+            change: r2(surplus - toOld), over: over, due: due
+        };
     }
 
     function updatePaySum() {
         var s = paySummary(), el = $('pmSum');
-        var parts = ['<span>Received: <b>' + money(r2(s.cash + s.other)) + '</b></span>'];
-        if (s.over) parts.push('<span class="bad">Non-cash payments are more than the total</span>');
-        else if (s.short > 0.004) parts.push('<span class="bad">Remaining: ' + money(s.short) + '</span>');
-        else parts.push('<span class="good">' + (s.change > 0.004 ? 'Change (cash): ' + money(s.change) : 'Paid in full') + '</span>');
-        el.innerHTML = parts.join('');
+        // udhaar wali line ka amount khud update
+        var amts = $('pmLines').querySelectorAll('.amt');
+        pmLines.forEach(function (l, i) { if (l.method === 'udhaar' && amts[i]) amts[i].value = l.amount ? money(l.amount).replace(/,/g, '') : '0'; });
+
+        var left = ['<span>Cash now: <b>' + money(s.cash) + '</b></span>'];
+        if (s.other > 0) left.push('<span>Other: <b>' + money(s.other) + '</b></span>');
+        if (s.hasCredit) left.push('<span>On credit: <b>' + money(s.udhaar) + '</b></span>');
+        var right;
+        if (s.over) right = '<span class="bad">Non-cash payments are more than the total</span>';
+        else if (s.short > 0.004) right = '<span class="bad">Remaining: ' + money(s.short) + '</span>';
+        else if (s.change > 0.004) right = '<span class="good">Give change: ' + money(s.change) + '</span>';
+        else right = '<span class="good">' + (s.udhaar > 0 ? 'OK' : 'Paid in full') + '</span>';
+        el.innerHTML = '<span class="pm-left">' + left.join(' · ') + '</span>' + right;
+
+        // Bill se zyada cash + customer ka purana udhaar = purane udhaar mein kaatein?
+        var ob = $('pmOldBox');
+        if (s.hasCredit && pmCustomer && s.surplus > 0.004 && s.due > 0.004) {
+            ob.hidden = false;
+            $('pmOldChk').checked = payOld;
+            $('pmOldTxt').textContent = 'Take the extra ' + SHOP.currency + ' ' + money(Math.min(s.surplus, s.due)) +
+                ' towards ' + pmCustomer.name + "'s previous balance (" + money(s.due) + ')';
+        } else {
+            ob.hidden = true;
+        }
+        // Customer ka naya baqi
+        if (pmCustomer) {
+            var lim = pmCustomer.limit, after = r2(s.due + s.udhaar - s.toOld);
+            $('pmCustInfo').textContent = 'Balance: ' + money(s.due) + ' → after this bill: ' + money(after) + (lim != null ? ' · Limit ' + money(lim) : '');
+        }
+        $('pmCustBox').hidden = !s.hasCredit;
     }
 
     $('pmAdd').addEventListener('click', function () {
         var s = paySummary();
-        pmLines.push({ method: pmLines.some(function (l) { return l.method === 'cash'; }) ? 'jazzcash' : 'cash', amount: s.short > 0 ? s.short : 0, ref: '' });
+        var rest = s.hasCredit ? s.udhaar : s.short;
+        pmLines.push({ method: pmLines.some(function (l) { return l.method === 'cash'; }) ? 'jazzcash' : 'cash', amount: rest > 0 ? rest : 0, ref: '' });
         renderPay();
         var amts = $('pmLines').querySelectorAll('.amt');
         amts[amts.length - 1].focus();
@@ -573,8 +630,7 @@
             picked.querySelector('b').textContent = pmCustomer.name;
             picked.querySelector('.muted').textContent = (pmCustomer.phone || '') + (pmCustomer.local ? '  (new)' : '');
             picked.querySelector('button').addEventListener('click', function () { pmCustomer = null; renderCustomer(); $('pmCustQ').focus(); });
-            var lim = pmCustomer.limit;
-            info.textContent = 'Previous balance: ' + money(pmCustomer.balance || 0) + (lim != null ? ' · Limit: ' + money(lim) : '');
+            updatePaySum();
         } else {
             picked.hidden = true; search.hidden = false; info.textContent = '';
             renderCustList();
@@ -595,7 +651,7 @@
             b.innerHTML = '<span><b></b> <span class="small muted"></span></span><span class="small"></span>';
             b.querySelector('b').textContent = c.name;
             b.querySelector('.muted').textContent = c.phone || '';
-            b.lastChild.textContent = 'due ' + money(c.balance || 0);
+            b.lastChild.textContent = dueText(c.balance);
             b.addEventListener('click', function () { pickCustomer(c); });
             list.appendChild(b);
         });
@@ -604,7 +660,8 @@
         if (!$('pmNewCust').hidden && !$('pmNewName').value) $('pmNewName').value = $('pmCustQ').value.trim();
     }
 
-    function pickCustomer(c) { pmCustomer = c; renderCustomer(); $('pmOk').focus(); }
+    function pickCustomer(c) { pmCustomer = c; renderCustomer(); updatePaySum(); $('pmOk').focus(); }
+    $('pmOldChk').addEventListener('change', function () { payOld = $('pmOldChk').checked; updatePaySum(); });
 
     $('pmCustQ').addEventListener('input', function () { custSel = 0; $('pmNewName').value = ''; renderCustList(); });
     $('pmCustQ').addEventListener('keydown', function (ev) {
@@ -628,7 +685,7 @@
         if (s.over) { toast('JazzCash / Card / Credit etc. cannot be more than the bill total', 'err'); return; }
         if (s.short > 0.004) { toast('Payment incomplete — ' + money(s.short) + ' remaining', 'err'); return; }
         var customer = null;
-        if (s.udhaar > 0) {
+        if (s.udhaar > 0 || s.toOld > 0) {
             if (!pmCustomer) {
                 var nn = $('pmNewName').value.trim();
                 if (!nn) { toast('Choose a customer for credit, or type a new name', 'err'); $('pmCustQ').focus(); return; }
@@ -640,9 +697,9 @@
             var lines = pmLines.filter(function (l) { return l.amount > 0; }).map(function (l) {
                 return { method: l.method, amount: r2(l.amount), ref: l.method === 'cash' || l.method === 'udhaar' ? '' : (l.ref || '') };
             });
-            finalize(lines, customer);
+            finalize(lines, customer, s.toOld);
         };
-        if (customer && !RULES.admin && customer.limit != null && r2((customer.balance || 0) + s.udhaar) > customer.limit + 0.004) {
+        if (customer && s.udhaar > 0 && !RULES.admin && customer.limit != null && r2((customer.balance || 0) + s.udhaar) > customer.limit + 0.004) {
             askPin('Credit limit exceeded: ' + customer.name + "'s balance will be " + money(r2((customer.balance || 0) + s.udhaar)) + ' (limit ' + money(customer.limit) + ')')
                 .then(function (admin) {
                     approvals.push({ what: 'Credit limit exceeded: ' + customer.name + ' ' + money(s.udhaar), admin_id: admin.id });

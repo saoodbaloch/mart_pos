@@ -91,17 +91,22 @@ function create_sale(array $s): array
     }
     $cashApplied = $cashNeeded;
     $change = r2($cashTendered - $cashApplied);
-    $paid = r2($cashTendered + $otherSum);
+
+    // Bill se zyada cash, customer ke purane udhaar mein (sirf utna jitna change bana aur jitna baqi hai)
+    $balancePay = max(0.0, min(r2($s['credit_payment'] ?? 0), $change));
 
     $customer = null;
     $prevBalance = 0.0;
-    if ($udhaar > 0) {
+    if ($udhaar > 0 || $balancePay > 0) {
         if (empty($s['customer']) || !is_array($s['customer'])) {
             throw new SaleError('Select a customer for credit.');
         }
         $customer = find_or_create_customer($s['customer']);
         $prevBalance = customer_balance((int)$customer['id']);
+        $balancePay = r2(min($balancePay, max(0.0, $prevBalance)));
     }
+    $change = r2($change - $balancePay);
+    $paid = r2($cashTendered + $otherSum - $balancePay);
 
     // ----- Kis ne banaya -----
     $user = null;
@@ -159,9 +164,15 @@ function create_sale(array $s): array
             $ins->execute([$saleId, $p['method'], $p['amount'], $p['ref'], $created]);
         }
 
-        if ($customer) {
+        if ($customer && $udhaar > 0) {
             qexec('INSERT INTO customer_ledger (customer_id, type, amount, sale_id, note, user_id, created_at) VALUES (?,?,?,?,?,?,?)',
                 [$customer['id'], 'sale', r2($udhaar), $saleId, 'Bill ' . $billNo, $userId, $created]);
+        }
+        if ($customer && $balancePay > 0) {
+            qexec('INSERT INTO customer_ledger (customer_id, type, amount, method, sale_id, note, user_id, created_at) VALUES (?,?,?,?,?,?,?,?)',
+                [$customer['id'], 'payment', -$balancePay, 'cash', $saleId, 'Paid with Bill ' . $billNo, $userId, $created]);
+        }
+        if ($customer) {
             qexec('UPDATE customers SET updated_at = ? WHERE id = ?', [now(), $customer['id']]);
         }
         $pdo->commit();
@@ -196,8 +207,11 @@ function create_sale(array $s): array
             }
         }
     }
-    if ($customer) {
+    if ($customer && $udhaar > 0) {
         log_activity('udhaar', $customer['name'] . ': ' . money($udhaar) . ' (Bill ' . $billNo . ')', $who);
+    }
+    if ($customer && $balancePay > 0) {
+        log_activity('udhaar_payment', $customer['name'] . ': ' . money($balancePay) . ' (Cash, with Bill ' . $billNo . ')', $who);
     }
     if ($discount > 0) {
         log_activity('discount', money($discount) . ' (' . number_format($discount / max($subtotal, 0.01) * 100, 1) . '%) Bill ' . $billNo, $who);
@@ -378,14 +392,16 @@ function cancel_sale(int $saleId): void
 function sale_receipt_data(array $sale): array
 {
     $c = $sale['customer_id'] ? q1('SELECT * FROM customers WHERE id = ?', [$sale['customer_id']]) : null;
+    $bp = $c ? r2(-(float)qv("SELECT COALESCE(SUM(amount),0) FROM customer_ledger WHERE sale_id = ? AND type = 'payment'", [$sale['id']])) : 0.0;
     return [
+        'credit_payment' => $bp,
         'bill_no' => $sale['bill_no'], 'created_at' => $sale['created_at'], 'status' => $sale['status'],
         'subtotal' => (float)$sale['subtotal'], 'discount' => (float)$sale['discount'], 'total' => (float)$sale['total'],
         'paid' => (float)$sale['paid'], 'change' => (float)$sale['change_amount'], 'returned_amount' => (float)$sale['returned_amount'],
         'cashier' => $sale['cashier'],
         'customer' => $c ? ['name' => $c['name'], 'phone' => $c['phone'], 'balance' => customer_balance((int)$c['id'])] : null,
         // cash line: customer ne jitne diye (wapsi samet), billing receipt jaisa
-        'payments' => array_map(fn($p) => ['method' => $p['method'], 'amount' => $p['method'] === 'cash' ? r2((float)$p['amount'] + (float)$sale['change_amount']) : (float)$p['amount'], 'ref' => $p['ref']], $sale['payments']),
+        'payments' => array_map(fn($p) => ['method' => $p['method'], 'amount' => $p['method'] === 'cash' ? r2((float)$p['amount'] + (float)$sale['change_amount'] + $bp) : (float)$p['amount'], 'ref' => $p['ref']], $sale['payments']),
         'reprint' => true,
         'items' => array_map(fn($it) => ['name' => $it['name'], 'unit' => $it['unit'], 'qty' => (float)$it['qty'], 'price' => (float)$it['price']], $sale['items']),
     ];
